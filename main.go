@@ -1,86 +1,150 @@
 package main
 
 import (
-	"fmt"
+	"image"
+	"image/color"
 	"os"
 	"os/signal"
+	"sync"
+	"syscall"
 	"time"
-
-	"github.com/qxdn/keyboard-wordcloud/modules/hook/keyboard"
-	"github.com/qxdn/keyboard-wordcloud/modules/hook/types"
-)
-
-/*
-import (
-	"fmt"
-	"image/color"
 
 	"github.com/fogleman/gg"
 	"github.com/psykhi/wordclouds"
 	"github.com/qxdn/keyboard-wordcloud/modules/font"
+	"github.com/qxdn/keyboard-wordcloud/modules/hook/keyboard"
+	"github.com/qxdn/keyboard-wordcloud/modules/hook/types"
 	"github.com/qxdn/keyboard-wordcloud/modules/mask"
+	log "github.com/sirupsen/logrus"
 )
 
+type WordCloudConf struct {
+	FontMaxSize     int
+	FontMinSize     int
+	RandomPlacement bool
+	FontFile        string
+	Colors          []color.RGBA
+	BackgroundColor color.RGBA
+	Width           int
+	Height          int
+	Mask            []*wordclouds.Box
+	SizeFunction    string
+	Debug           bool
+}
+
 var (
-	wcColor = []color.RGBA{
+	WordCounts    = make(map[string]uint64, 255) // count keyboard counts
+	DefaultColors = []color.RGBA{
 		{0xa7, 0x1b, 0x1b, 0xff},
 		{0x48, 0x48, 0x4B, 0xff},
 		{0x59, 0x3a, 0xee, 0xff},
 		{0x65, 0xCD, 0xFA, 0xff},
 		{0x70, 0xD6, 0xBF, 0xff},
 	}
+	FontPath             = font.LoadFontPath("arial.ttf")
+	Width                = 4096
+	Height               = 4096
+	DefaultWordCloudConf = WordCloudConf{
+		FontMaxSize:     400,
+		FontMinSize:     10,
+		RandomPlacement: false,
+		FontFile:        FontPath,
+		Colors:          DefaultColors,
+		BackgroundColor: color.RGBA{255, 255, 255, 255},
+		Width:           Width,
+		Height:          Height,
+		Mask: mask.LoadDefaulMask(Width, Height, color.RGBA{
+			R: 0,
+			G: 0,
+			B: 0,
+			A: 0,
+		}),
+		Debug:        true,
+		SizeFunction: "linear",
+	}
 )
 
-func main() {
-	wordCounts := map[string]int{"important": 10, "notebook": 10, "mesh": 10, "abc": 10, "mass": 20}
+func generateWordCloud(wordcount map[string]uint64, conf *WordCloudConf) image.Image {
+	if conf == nil {
+		conf = &DefaultWordCloudConf
+	}
 	colors := make([]color.Color, 0)
-	for _, c := range wcColor {
+	for _, c := range conf.Colors {
 		colors = append(colors, c)
 	}
-	fontPath := font.LoadFontPath("arial.ttf")
-	fmt.Println(fontPath)
-	boxes := mask.LoadMask("", 2048, 2048, color.RGBA{0, 0, 0, 0})
-	w := wordclouds.NewWordcloud(
-		wordCounts,
+	oarr := []wordclouds.Option{wordclouds.FontFile(conf.FontFile),
+		wordclouds.FontMaxSize(conf.FontMaxSize),
+		wordclouds.FontMinSize(conf.FontMinSize),
 		wordclouds.Colors(colors),
-		wordclouds.FontMaxSize(200),
-		wordclouds.FontFile(fontPath),
-
-		wordclouds.Height(2048),
-		wordclouds.Width(2048),
-		wordclouds.MaskBoxes(boxes),
-		wordclouds.Debug(),
-	)
-	gg.SavePNG("temp.png", w.Draw())
+		wordclouds.MaskBoxes(conf.Mask),
+		wordclouds.Height(conf.Height),
+		wordclouds.Width(conf.Width),
+		wordclouds.WordSizeFunction(conf.SizeFunction),
+		wordclouds.RandomPlacement(conf.RandomPlacement),
+		wordclouds.BackgroundColor(conf.BackgroundColor)}
+	if conf.Debug {
+		oarr = append(oarr, wordclouds.Debug())
+	}
+	w := wordclouds.NewWordcloud(wordcount, oarr...)
+	return w.Draw()
 }
-*/
+
+func init() {
+	log.SetLevel(log.DebugLevel)
+	/**
+	log.SetOutput(&lumberjack.Logger{
+		Filename:   "./logs/log.log",
+		MaxSize:    500, // megabytes
+		MaxBackups: 3,
+		MaxAge:     28,   //days
+		Compress:   true, // disabled by default
+	})
+	*/
+}
+
+func countKeyBoard(ch <-chan types.KeyboardEvent, lock *sync.RWMutex) {
+	for {
+		k := <-ch
+		log.Debugf("Received %v %s", k.Message, k.VKCode.String())
+		if k.Message == types.WM_KEYDOWN || k.Message == types.WM_SYSKEYDOWN {
+			// TODO: 限制上限
+			lock.Lock()
+			WordCounts[k.VKCode.String()[3:]]++
+			lock.Unlock()
+		}
+	}
+}
 
 func main() {
+	// keyboard event chan
 	ch := make(chan types.KeyboardEvent, 100)
+	rwlock := &sync.RWMutex{}
 
+	// install hook
 	if err := keyboard.Install(ch); err != nil {
-		fmt.Println(err)
+		log.Fatal(err)
 		return
 	}
 	defer keyboard.Uninstall()
 
-	signalChan := make(chan os.Signal, 1)
-	signal.Notify(signalChan, os.Interrupt)
+	go countKeyBoard(ch, rwlock)
 
-	fmt.Println("start capturing keyboard input")
+	// os signal
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, os.Interrupt, syscall.SIGTERM)
 
 	for {
 		select {
-		case <-time.After(5 * time.Minute):
-			fmt.Println("Received timeout signal")
+		case <-time.After(30 * time.Second):
+			log.Debug("Received timeout signal")
+			rwlock.RLock()
+			img := generateWordCloud(WordCounts, nil)
+			gg.SavePNG("out.png", img)
+			rwlock.RUnlock()
 			return
-		case <-signalChan:
-			fmt.Println("Received shutdown signal")
+		case s := <-signalChan:
+			log.Debugf("received os signal: %v", s)
 			return
-		case k := <-ch:
-			fmt.Printf("Received %v %v\n", k.Message, k.VKCode)
-			continue
 		}
 	}
-
 }

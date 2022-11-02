@@ -4,6 +4,7 @@ package keyboard
 
 import (
 	"fmt"
+	"log"
 	"sync"
 	"syscall"
 	"unsafe"
@@ -50,7 +51,7 @@ func install(ch chan<- types.KeyboardEvent) error {
 			0)
 		if hhook == 0 {
 			// return value is null
-			panic("keyboard: hook install fail")
+			log.Panic("keyboard: hook install fail")
 		}
 		hHook.Pointer = hhook
 
