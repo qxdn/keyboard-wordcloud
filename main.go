@@ -1,10 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"image"
 	"image/color"
+	"io/ioutil"
+	"math"
 	"os"
 	"os/signal"
+	"path"
 	"sync"
 	"syscall"
 	"time"
@@ -17,6 +21,7 @@ import (
 	"github.com/qxdn/keyboard-wordcloud/modules/hook/types"
 	"github.com/qxdn/keyboard-wordcloud/modules/mask"
 	log "github.com/sirupsen/logrus"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
 
 type WordCloudConf struct {
@@ -33,9 +38,16 @@ type WordCloudConf struct {
 	Debug           bool
 }
 
+type CheckPoint struct {
+	Date       string         `json:"timestamp"`
+	Checkpoint map[string]int `json:"checkpoint"`
+}
+
 var (
-	WordCounts    = make(map[string]int, 255) // count keyboard counts
-	DefaultColors = []color.RGBA{
+	ImageSavePath  string
+	checkpointPath string
+	WordCounts     = make(map[string]int, 255) // count keyboard counts
+	DefaultColors  = []color.RGBA{
 		{0xa7, 0x1b, 0x1b, 0xff},
 		{0x48, 0x48, 0x4B, 0xff},
 		{0x59, 0x3a, 0xee, 0xff},
@@ -60,12 +72,12 @@ var (
 			B: 0,
 			A: 0,
 		}),
-		Debug:        true,
+		Debug:        false,
 		SizeFunction: "linear",
 	}
 )
 
-func generateWordCloud(wordcount map[string]int, conf *WordCloudConf) (image.Image, error) {
+func _generateWordClouds(wordcount map[string]int, conf *WordCloudConf) (image.Image, error) {
 	if conf == nil {
 		conf = &DefaultWordCloudConf
 	}
@@ -94,8 +106,8 @@ func generateWordCloud(wordcount map[string]int, conf *WordCloudConf) (image.Ima
 }
 
 func init() {
-	log.SetLevel(log.DebugLevel)
-	/**
+	log.SetLevel(log.InfoLevel)
+	// rolling log
 	log.SetOutput(&lumberjack.Logger{
 		Filename:   "./logs/log.log",
 		MaxSize:    500, // megabytes
@@ -103,40 +115,91 @@ func init() {
 		MaxAge:     28,   //days
 		Compress:   true, // disabled by default
 	})
-	*/
+
+	baseDir, _ := os.UserHomeDir()
+	savePath := path.Join(baseDir, "Pictures", "wordclouds")
+	// ignore exist
+	os.MkdirAll(savePath, os.ModePerm)
+	ImageSavePath = savePath
+
+	// word dir
+	wordDir, _ := os.Getwd()
+	checkpointPath = path.Join(wordDir, "checkpoint.json")
+	checkpoint := CheckPoint{}
+	// load checkpoint
+	if _, err := os.Stat(checkpointPath); err == nil {
+		log.Info("checkpoint file exist")
+		// checkpoint file exist
+		content, err := ioutil.ReadFile(checkpointPath)
+		if err != nil {
+			log.Panic(err)
+		}
+		json.Unmarshal(content, &checkpoint)
+		WordCounts = checkpoint.Checkpoint
+		date, err := time.Parse(time.RFC3339, checkpoint.Date)
+		if err != nil {
+			log.Panic(err)
+		}
+		if time.Since(date).Hours() >= 24 {
+			generateWordClouds(date)
+		}
+	}
 }
 
 func countKeyBoard(ch <-chan types.KeyboardEvent, lock *sync.RWMutex) {
 	for {
 		k := <-ch
-		log.Debugf("Received %v %s", k.Message, k.VKCode.String())
+		code := k.VKCode.String()[3:]
+		log.Debugf("Received %v %s", k.Message, code)
 		if k.Message == types.WM_KEYDOWN || k.Message == types.WM_SYSKEYDOWN {
 			// TODO: 限制上限
+			if WordCounts[code] == math.MaxInt {
+				log.Warnf("Key:%v count max", k.VKCode)
+				continue
+			}
 			lock.Lock()
-			WordCounts[k.VKCode.String()[3:]]++
+			WordCounts[code]++
 			lock.Unlock()
 		}
 	}
 }
 
-func generateAndSaveWordCloud(lock *sync.RWMutex) {
-	yesterday := time.Now().AddDate(0, 0, -1)
+func generateWordClouds(date time.Time) {
+	defer saveCheckPoint()
 	// fotmat to YYYY-MM-DD
-	outName := yesterday.Format("./record/2006-01-02.png")
-	log.Infof("generate date = %v wordcloud", yesterday.Format("2006-01-02"))
-	lock.Lock()
-	img, err := generateWordCloud(WordCounts, nil)
+	filename := date.Format("2006-01-02.png")
+	filename = path.Join(ImageSavePath, filename)
+	log.Infof("generate date = %v wordcloud", date.Format("2006-01-02"))
+	img, err := _generateWordClouds(WordCounts, nil)
 	for i := 0; i < 255; i++ {
 		for k := range WordCounts {
 			WordCounts[k] = 0
 		}
 	}
-	lock.Unlock()
 	if err != nil {
 		log.Errorf("generate wordcloud fail: %v", err.Error())
 		return
 	}
-	gg.SavePNG(outName, img)
+	gg.SavePNG(filename, img)
+}
+
+func generateWordCloudsCron(lock *sync.RWMutex) {
+	yesterday := time.Now().AddDate(0, 0, -1)
+	lock.Lock()
+	defer lock.Unlock()
+	generateWordClouds(yesterday)
+}
+
+func saveCheckPoint() {
+	checkpoint := CheckPoint{
+		Date:       time.Now().Format(time.RFC3339),
+		Checkpoint: WordCounts,
+	}
+	content, err := json.Marshal(checkpoint)
+	if err != nil {
+		log.Error(err)
+	}
+	ioutil.WriteFile(checkpointPath, content, os.ModePerm)
 }
 
 func main() {
@@ -149,12 +212,22 @@ func main() {
 		log.Fatal(err)
 		return
 	}
+	log.Info("installed keyboard hook")
 	defer keyboard.Uninstall()
 
 	go countKeyBoard(ch, rwlock)
-
+	go func(lock *sync.RWMutex) {
+		for {
+			lock.RLock()
+			saveCheckPoint()
+			lock.RUnlock()
+			// save per 5 minute
+			time.Sleep(5 * time.Minute)
+		}
+	}(rwlock)
 	// generate file at every day 00:00am
-	gocron.Every(1).Days().At("00:00").Do(generateAndSaveWordCloud, rwlock)
+	gocron.Every(1).Days().At("00:00").Do(generateWordCloudsCron, rwlock)
+	//gocron.Every(60).Seconds().Do(generateWordCloudsCron, rwlock)
 
 	gocron.Start()
 
@@ -164,5 +237,4 @@ func main() {
 	// recieve stop signal
 	s := <-signalChan
 	log.Debugf("received os signal: %v", s)
-
 }

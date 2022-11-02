@@ -8,9 +8,11 @@ require (
 	github.com/jasonlvhit/gocron v0.0.1
 	github.com/psykhi/wordclouds v0.0.0-20220728072901-2d77dabdd4fd
 	github.com/sirupsen/logrus v1.9.0
+	gopkg.in/natefinch/lumberjack.v2 v2.0.0
 )
 
 require (
+	github.com/BurntSushi/toml v1.2.1 // indirect
 	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0 // indirect
 	github.com/satori/go.uuid v1.2.0 // indirect
 	golang.org/x/image v0.0.0-20191009234506-e7c1f5e7dbb8 // indirect

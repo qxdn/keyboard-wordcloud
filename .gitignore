@@ -28,3 +28,5 @@ go.work
 logs
 
 record/*.png
+
+checkpoint.json
