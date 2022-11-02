@@ -2,6 +2,17 @@ package main
 
 import (
 	"fmt"
+	"os"
+	"os/signal"
+	"time"
+
+	"github.com/qxdn/keyboard-wordcloud/modules/hook/keyboard"
+	"github.com/qxdn/keyboard-wordcloud/modules/hook/types"
+)
+
+/*
+import (
+	"fmt"
 	"image/color"
 
 	"github.com/fogleman/gg"
@@ -41,4 +52,35 @@ func main() {
 		wordclouds.Debug(),
 	)
 	gg.SavePNG("temp.png", w.Draw())
+}
+*/
+
+func main() {
+	ch := make(chan types.KeyboardEvent, 100)
+
+	if err := keyboard.Install(ch); err != nil {
+		fmt.Println(err)
+		return
+	}
+	defer keyboard.Uninstall()
+
+	signalChan := make(chan os.Signal, 1)
+	signal.Notify(signalChan, os.Interrupt)
+
+	fmt.Println("start capturing keyboard input")
+
+	for {
+		select {
+		case <-time.After(5 * time.Minute):
+			fmt.Println("Received timeout signal")
+			return
+		case <-signalChan:
+			fmt.Println("Received shutdown signal")
+			return
+		case k := <-ch:
+			fmt.Printf("Received %v %v\n", k.Message, k.VKCode)
+			continue
+		}
+	}
+
 }
