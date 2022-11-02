@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/fogleman/gg"
+	"github.com/jasonlvhit/gocron"
 	"github.com/psykhi/wordclouds"
 	"github.com/qxdn/keyboard-wordcloud/modules/font"
 	"github.com/qxdn/keyboard-wordcloud/modules/hook/keyboard"
@@ -33,7 +34,7 @@ type WordCloudConf struct {
 }
 
 var (
-	WordCounts    = make(map[string]uint64, 255) // count keyboard counts
+	WordCounts    = make(map[string]int, 255) // count keyboard counts
 	DefaultColors = []color.RGBA{
 		{0xa7, 0x1b, 0x1b, 0xff},
 		{0x48, 0x48, 0x4B, 0xff},
@@ -64,7 +65,7 @@ var (
 	}
 )
 
-func generateWordCloud(wordcount map[string]uint64, conf *WordCloudConf) image.Image {
+func generateWordCloud(wordcount map[string]int, conf *WordCloudConf) (image.Image, error) {
 	if conf == nil {
 		conf = &DefaultWordCloudConf
 	}
@@ -85,8 +86,11 @@ func generateWordCloud(wordcount map[string]uint64, conf *WordCloudConf) image.I
 	if conf.Debug {
 		oarr = append(oarr, wordclouds.Debug())
 	}
-	w := wordclouds.NewWordcloud(wordcount, oarr...)
-	return w.Draw()
+	w, err := wordclouds.NewWordcloud(wordcount, oarr...)
+	if err != nil {
+		return nil, err
+	}
+	return w.Draw(), nil
 }
 
 func init() {
@@ -115,6 +119,26 @@ func countKeyBoard(ch <-chan types.KeyboardEvent, lock *sync.RWMutex) {
 	}
 }
 
+func generateAndSaveWordCloud(lock *sync.RWMutex) {
+	yesterday := time.Now().AddDate(0, 0, -1)
+	// fotmat to YYYY-MM-DD
+	outName := yesterday.Format("./record/2006-01-02.png")
+	log.Infof("generate date = %v wordcloud", yesterday.Format("2006-01-02"))
+	lock.Lock()
+	img, err := generateWordCloud(WordCounts, nil)
+	for i := 0; i < 255; i++ {
+		for k := range WordCounts {
+			WordCounts[k] = 0
+		}
+	}
+	lock.Unlock()
+	if err != nil {
+		log.Errorf("generate wordcloud fail: %v", err.Error())
+		return
+	}
+	gg.SavePNG(outName, img)
+}
+
 func main() {
 	// keyboard event chan
 	ch := make(chan types.KeyboardEvent, 100)
@@ -129,22 +153,16 @@ func main() {
 
 	go countKeyBoard(ch, rwlock)
 
+	// generate file at every day 00:00am
+	gocron.Every(1).Days().At("00:00").Do(generateAndSaveWordCloud, rwlock)
+
+	gocron.Start()
+
 	// os signal
 	signalChan := make(chan os.Signal, 1)
 	signal.Notify(signalChan, os.Interrupt, syscall.SIGTERM)
+	// recieve stop signal
+	s := <-signalChan
+	log.Debugf("received os signal: %v", s)
 
-	for {
-		select {
-		case <-time.After(30 * time.Second):
-			log.Debug("Received timeout signal")
-			rwlock.RLock()
-			img := generateWordCloud(WordCounts, nil)
-			gg.SavePNG("out.png", img)
-			rwlock.RUnlock()
-			return
-		case s := <-signalChan:
-			log.Debugf("received os signal: %v", s)
-			return
-		}
-	}
 }

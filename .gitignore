@@ -26,3 +26,5 @@ go.work
 
 # logs
 logs
+
+record/*.png
