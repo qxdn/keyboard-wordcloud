@@ -59,7 +59,7 @@ var (
 	Height               = 4096
 	DefaultWordCloudConf = WordCloudConf{
 		FontMaxSize:     400,
-		FontMinSize:     10,
+		FontMinSize:     100,
 		RandomPlacement: false,
 		FontFile:        FontPath,
 		Colors:          DefaultColors,
@@ -105,12 +105,17 @@ func _generateWordClouds(wordcount map[string]int, conf *WordCloudConf) (image.I
 	return w.Draw(), nil
 }
 
+func isNewDay(t time.Time) bool {
+	begin := time.Now().Truncate(24 * time.Hour)
+	return t.Before(begin)
+}
+
 func init() {
 	log.SetLevel(log.InfoLevel)
 	// rolling log
 	log.SetOutput(&lumberjack.Logger{
 		Filename:   "./logs/log.log",
-		MaxSize:    500, // megabytes
+		MaxSize:    350, // megabytes
 		MaxBackups: 3,
 		MaxAge:     28,   //days
 		Compress:   true, // disabled by default
@@ -140,7 +145,7 @@ func init() {
 		if err != nil {
 			log.Panic(err)
 		}
-		if time.Since(date).Hours() >= 24 {
+		if isNewDay(date) {
 			generateWordClouds(date)
 		}
 	}
@@ -222,7 +227,7 @@ func main() {
 			saveCheckPoint()
 			lock.RUnlock()
 			// save per 5 minute
-			time.Sleep(5 * time.Minute)
+			time.Sleep(60 * time.Second)
 		}
 	}(rwlock)
 	// generate file at every day 00:00am
